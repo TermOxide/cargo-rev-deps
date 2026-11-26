@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo:
+    name: "cargo · ${{ matrix.check.name }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - name: lint
+            toolchain: stable
+            components: clippy
+            run: cargo clippy --locked --all-targets -- -D warnings
+          # rustfmt.toml uses unstable options. Same nightly as `rustfmt-nightly` in flake.nix.
+          - name: format
+            toolchain: nightly-2026-03-01
+            components: rustfmt
+            run: cargo fmt --check
+          - name: test
+            toolchain: stable
+            components: ""
+            run: cargo test --locked
+          - name: package
+            toolchain: stable
+            components: ""
+            run: cargo package --locked
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.check.toolchain }}
+          components: ${{ matrix.check.components }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.check.name }}
+
+      - name: ${{ matrix.check.name }}
+        run: ${{ matrix.check.run }}
+
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@v32
+
+      # Builds the package, tests included, and evaluates the devshell.
+      - run: nix flake check -L
+
+      - run: nix fmt -- --ci
