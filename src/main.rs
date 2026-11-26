@@ -1,84 +1,43 @@
-use std::{
-    collections::{HashSet, VecDeque},
-    env,
-    process::Command,
-};
+mod cargo;
+mod changed;
+mod cli;
+mod git;
+mod impact;
+mod process;
+
+use std::env;
 
 use anyhow::{Context, Result};
-use guppy::{
-    CargoMetadata,
-    graph::{DependencyDirection::Reverse, PackageGraph},
-};
+use guppy::MetadataCommand;
 
 fn main() -> Result<()> {
-    // Get the --since argument from the command line
-    let since = env::args().nth(1).context(
-        "Usage: cargo rev-deps <since_commit_or_tag>\n   or: cargo-rev-deps <since_commit_or_tag>",
-    )?;
+    let since = match cli::parse(env::args())? {
+        cli::Command::Help => {
+            println!("{}", cli::USAGE);
+            return Ok(());
+        },
+        cli::Command::Run { since } => since,
+    };
 
-    // Run `cargo workspaces changed --since <since>`
-    let output = Command::new("cargo")
-        .args(["workspaces", "changed", "--since", &since])
-        .output()
-        .context("failed to run cargo workspaces changed")?;
+    git::ensure_commit_exists(&since)?;
+    cargo::ensure_workspaces_installed()?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("cargo workspaces changed failed ({}): {}", output.status, stderr);
-    }
-
-    let changed_stdout = String::from_utf8(output.stdout)?;
-    let changed: HashSet<String> = changed_stdout.split_whitespace().map(|s| s.to_string()).collect();
-
+    let changed = changed::changed_since(&since)?;
     if changed.is_empty() {
         return Ok(());
     }
 
-    let metadata_output = Command::new("cargo")
-        .args(["metadata", "--format-version", "1"])
-        .output()
-        .context("failed to run cargo metadata")?;
+    let graph = MetadataCommand::new()
+        .build_graph()
+        .context("failed to load the workspace with `cargo metadata`")?;
 
-    if !metadata_output.status.success() {
-        let stderr = String::from_utf8_lossy(&metadata_output.stderr);
-        anyhow::bail!("cargo metadata failed ({}): {}", metadata_output.status, stderr);
+    let impact = impact::impacted(&graph, &changed)?;
+    for name in &impact.unknown {
+        eprintln!("warning: `{name}` is not a workspace member, skipping it");
     }
-
-    let metadata = CargoMetadata::parse_json(&String::from_utf8(metadata_output.stdout)?)?;
-
-    let graph = PackageGraph::from_metadata(metadata)?;
-
-    let mut name_to_id = std::collections::HashMap::new();
-    for pkg in graph.packages() {
-        name_to_id.insert(pkg.name().to_string(), pkg.id().clone());
+    if !impact.crates.is_empty() {
+        println!("{}", Vec::from_iter(impact.crates).join(" "));
     }
-
-    // BFS over reverse dependencies
-    let mut impacted = HashSet::new();
-    let mut queue: VecDeque<_> = changed.into_iter().collect();
-
-    while let Some(pkg_name) = queue.pop_front() {
-        let Some(pkg_id) = name_to_id.get(&pkg_name) else {
-            continue;
-        };
-
-        if !impacted.insert(pkg_name.clone()) {
-            continue;
-        }
-
-        let reverse = graph.query_reverse(std::slice::from_ref(pkg_id))?.resolve();
-
-        for pkg in reverse.packages(Reverse) {
-            let name = pkg.name().to_string();
-            if !impacted.contains(&name) {
-                queue.push_back(name);
-            }
-        }
-    }
-
-    let mut impacted: Vec<_> = impacted.into_iter().collect();
-    impacted.sort();
-    println!("{}", impacted.join(" "));
 
     Ok(())
 }
