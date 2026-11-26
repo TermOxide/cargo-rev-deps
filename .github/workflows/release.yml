@@ -108,8 +108,12 @@ jobs:
             git tag -a "$TAG" -m "$TAG"
           fi
 
+      # `cargo publish` doesn't leave the .crate in target/package, so
+      # `cargo package` builds the one attached to the GitHub release.
       - name: Package
-        run: cargo publish --locked --dry-run
+        run: |
+          cargo package --locked
+          cargo publish --locked --dry-run
 
       - name: Push commit and tag
         if: ${{ !inputs.dry_run }}
