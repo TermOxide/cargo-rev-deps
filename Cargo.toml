@@ -1,0 +1,14 @@
+[package]
+name = "cargo-rev-deps"
+version = "0.1.0"
+edition = "2024"
+description = "List the workspace crates changed since a git commit/tag, along with every crate that depends on them"
+license = "BSD-2-Clause"
+repository = "https://github.com/TermOxide/cargo-rev-deps"
+readme = "README.md"
+keywords = ["cargo", "workspace", "ci", "dependencies", "monorepo"]
+categories = ["development-tools::cargo-plugins", "command-line-utilities"]
+
+[dependencies]
+guppy = "0.19"
+anyhow = "1"
