@@ -40,9 +40,12 @@ jobs:
           echo "::error::Releases are made from main, not ${GITHUB_REF}"
           exit 1
 
-      # Checked before anything is pushed, so a missing token leaves no tag behind.
+      # Checked before anything is pushed, so a bad token leaves no tag behind.
+      # crates.io has no endpoint to inspect a token, so this sends a publish
+      # with an empty .crate: the token and its scopes are checked first (401
+      # or 403), and only an accepted token gets as far as rejecting the empty
+      # .crate (400). Nothing can be published this way.
       - name: Check the crates.io token
-        if: ${{ !inputs.dry_run }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -50,6 +53,29 @@ jobs:
             echo "::error::The CARGO_REGISTRY_TOKEN secret is not set"
             exit 1
           fi
+
+          metadata='{"name":"cargo-rev-deps","vers":"0.0.0"}'
+          perl -e 'print pack("V", length $ARGV[0]), $ARGV[0], pack("V", 0)' "$metadata" > publish-probe
+          status=$(curl -s -o probe-response -w '%{http_code}' --retry 3 --max-time 20 \
+            -X PUT --data-binary @publish-probe \
+            -H "Authorization: ${CARGO_REGISTRY_TOKEN}" \
+            -A "cargo-rev-deps-ci (https://github.com/${GITHUB_REPOSITORY})" \
+            https://crates.io/api/v1/crates/new || true)
+          detail=$(jq -r '.errors[0].detail // empty' probe-response 2>/dev/null || true)
+          rm -f publish-probe probe-response
+
+          case "$status" in
+            400) echo "The token can publish cargo-rev-deps" ;;
+            401 | 403)
+              echo "::error::crates.io refuses the token (HTTP ${status}): ${detail}"
+              echo "::error::It needs the publish-update scope, and its crate patterns must match cargo-rev-deps"
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected answer from crates.io (HTTP ${status}): ${detail}"
+              exit 1
+              ;;
+          esac
 
       - uses: actions/checkout@v7
         with:
